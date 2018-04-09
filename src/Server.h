@@ -33,25 +33,32 @@ struct ServerFunctionParams {
 	RequestTypes_t requestType;
 };
 
+typedef unordered_map<string, function<string(ServerFunctionParams)>> functionMap_t;
+
 struct ConnectionParams {
 	pthread_t thread;
 	int client_socket;
+	string request;
 	bool inUse;
+	functionMap_t functionMap;
 };
+
 
 void *handleClientCon(ConnectionParams *);
 
 class Server {
 public:
-	Server(int, int);
+	function<string(ServerFunctionParams)> sample;
+
+	Server(int, int, functionMap_t);
 private:
-	typedef unordered_map<string, function<void(ServerFunctionParams)>> functionMap_t;
 	functionMap_t routeNamesFunctions;
 	vector<ConnectionParams> conThreads;
 };
 
-Server::Server(int port, int maxCons) {
+Server::Server(int port, int maxCons, functionMap_t functionMap) {
 	conThreads = vector<ConnectionParams>(maxCons);
+	routeNamesFunctions = functionMap;
 	generate(conThreads.begin(), conThreads.end(), 
 			[] () { ConnectionParams param; param.inUse = false; return param; } );
 
@@ -82,23 +89,34 @@ Server::Server(int port, int maxCons) {
 		auto openCon = find_if(conThreads.begin(), conThreads.end(),
 				[](auto a) { return !a.inUse; });
 
-		assert(openCon != conThreads.end());
 		openCon->inUse = true;
 		openCon->client_socket = client_socket;
+		openCon->request = client_request;
+		openCon->functionMap = routeNamesFunctions;
 		pthread_create(&openCon->thread, NULL, (void *(*)(void *)) handleClientCon, &*openCon);
-		//send(client_socket, http_header, sizeof(http_header), 0);
-		//close(client_socket);
 	}
 }
 
 void *handleClientCon(ConnectionParams *params) {
 	int client_socket = params->client_socket;
 	pthread_t thread = params->thread;
+	functionMap_t functionMap = params->functionMap;
+	string request = params->request;
 
-	char http_header[] = "HTTP/1.1 200 OK\r\n\n\
-		<html><body>Hi!</body></html>";
-	sleep(3);
-	send(client_socket, http_header, sizeof(http_header), 0);
+	ServerFunctionParams param;
+
+	char http_header[] = "HTTP/1.1 200 OK\r\n\n";
+
+	string type = request.substr(0, request.find(' '));
+	string route = request.substr(request.find(' ') + 1, request.find(' ', request.find(' ') + 1) - request.find(' ') - 1);
+	
+	string ret;
+	if (functionMap.find(route) != functionMap.end())
+		ret = http_header + functionMap[route](param);
+	else
+		ret = http_header + string("404");
+
+	send(client_socket, ret.c_str(), ret.size(), 0);
 
 	close(client_socket);
 	pthread_join(thread, NULL);
